@@ -14,7 +14,7 @@ use embedded_hal::digital::OutputPin;
 use embedded_hal_async::digital::Wait;
 use embedded_hal_async::spi::SpiDevice;
 
-use crate::chip::Chip;
+use crate::chip::{Chip, W5500};
 pub use crate::device::InitError;
 use crate::device::WiznetDevice;
 
@@ -47,6 +47,59 @@ impl<const N_RX: usize, const N_TX: usize> State<N_RX, N_TX> {
     }
 }
 
+/// PHY operating mode (PHYCFGR OPMDC bits).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[repr(u8)]
+pub enum PhyMode {
+    /// 10BASE-T half duplex, no auto-negotiation.
+    HalfDuplex10 = 0b000,
+    /// 10BASE-T full duplex, no auto-negotiation.
+    FullDuplex10 = 0b001,
+    /// 100BASE-TX half duplex, no auto-negotiation.
+    HalfDuplex100 = 0b010,
+    /// 100BASE-TX full duplex, no auto-negotiation.
+    FullDuplex100 = 0b011,
+    /// 100BASE-TX half duplex, auto-negotiation on.
+    HalfDuplex100Auto = 0b100,
+    /// PHY powered down.
+    PowerDown = 0b110,
+    /// All capable, auto-negotiation on.
+    AutoNegotiate = 0b111,
+}
+
+/// A PHYCFGR register value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct PhyCfg(u8);
+
+impl PhyCfg {
+    /// The raw register value.
+    pub const fn bits(self) -> u8 {
+        self.0
+    }
+
+    /// Whether the link is up.
+    pub const fn link_up(self) -> bool {
+        self.0 & 0b001 != 0
+    }
+
+    /// Whether the link runs at 100 Mbps.
+    pub const fn is_100mbps(self) -> bool {
+        self.0 & 0b010 != 0
+    }
+
+    /// Whether the link is full duplex.
+    pub const fn is_full_duplex(self) -> bool {
+        self.0 & 0b100 != 0
+    }
+}
+
+/// PHY reset, active low.
+const PHY_CFG_RST: u8 = 1 << 7;
+/// Take the mode from OPMDC, not PMODE.
+const PHY_CFG_OPMD: u8 = 1 << 6;
+
 /// Background runner for the driver.
 ///
 /// You must call `.run()` in a background task for the driver to operate.
@@ -55,6 +108,24 @@ pub struct Runner<'d, C: Chip, SPI: SpiDevice, INT: Wait, RST: OutputPin> {
     ch: ch::Runner<'d, MTU>,
     int: INT,
     _reset: RST,
+}
+
+/// PHY configuration, W5500 only.
+impl<'d, SPI: SpiDevice, INT: Wait, RST: OutputPin> Runner<'d, W5500, SPI, INT, RST> {
+    /// Read the PHYCFGR register.
+    pub async fn phy_cfg(&mut self) -> Result<PhyCfg, SPI::Error> {
+        self.mac.read_phy_cfg().await.map(PhyCfg)
+    }
+
+    /// Force `mode` and pulse the PHY reset.
+    pub async fn set_phy_mode(&mut self, mode: PhyMode) -> Result<PhyCfg, SPI::Error> {
+        let cfg = PHY_CFG_OPMD | ((mode as u8) << 3);
+        self.mac.write_phy_cfg(cfg).await?;
+        // Ensure the reset is registered.
+        Timer::after_millis(1).await;
+        self.mac.write_phy_cfg(cfg | PHY_CFG_RST).await?;
+        self.phy_cfg().await
+    }
 }
 
 /// You must call this in a background task for the driver to operate.

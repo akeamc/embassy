@@ -247,9 +247,17 @@ impl<C: Chip, SPI: SpiDevice> WiznetDevice<C, SPI> {
         Ok(frame.len())
     }
 
+    pub async fn read_phy_cfg(&mut self) -> Result<u8, SPI::Error> {
+        let mut cfg = [0];
+        self.bus_read(C::COMMON_PHY_CFG, &mut cfg).await?;
+        Ok(cfg[0])
+    }
+
+    pub async fn write_phy_cfg(&mut self, cfg: u8) -> Result<(), SPI::Error> {
+        self.bus_write(C::COMMON_PHY_CFG, &[cfg]).await
+    }
+
     pub async fn is_link_up(&mut self) -> bool {
-        let mut link = [0];
-        self.bus_read(C::COMMON_PHY_CFG, &mut link).await.ok();
-        link[0] & 1 == 1
+        matches!(self.read_phy_cfg().await, Ok(cfg) if cfg & 1 == 1)
     }
 }
